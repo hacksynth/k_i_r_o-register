@@ -153,6 +153,9 @@ async def manual_login(method, headless=False, auto_login=True, clear_session=Tr
     log(f"Phase 2: 启动浏览器 (headless={headless})", "info")
     authorization_code = ""
 
+    class ReuseHTTPServer(HTTPServer):
+        allow_reuse_address = True
+
     class CallbackHandler(BaseHTTPRequestHandler):
         signin_callback_params = {}
 
@@ -204,7 +207,7 @@ async def manual_login(method, headless=False, auto_login=True, clear_session=Tr
         except Exception:
             pass
 
-    callback_server = HTTPServer(("127.0.0.1", 3128), CallbackHandler)
+    callback_server = ReuseHTTPServer(("127.0.0.1", 3128), CallbackHandler)
     callback_server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv_thread = threading.Thread(target=callback_server.serve_forever, daemon=True)
     srv_thread.start()
@@ -220,7 +223,7 @@ async def manual_login(method, headless=False, auto_login=True, clear_session=Tr
             if headless:
                 launch_args += ["--disable-gpu", "--no-sandbox",
                                 "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-            browser = await p.chromium.launch(headless=headless, args=launch_args)
+            browser = await p.chromium.launch(headless=headless, args=launch_args, executable_path="/usr/bin/chromium")
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 800}, locale="en-US", user_agent=REG_UA)
             page = await context.new_page()

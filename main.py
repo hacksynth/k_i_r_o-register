@@ -1350,6 +1350,9 @@ class App(tk.Tk):
             if name == "tempforward":
                 self._reg_mail_key_entry.configure(state="disabled")
                 self._reg_domain_combo.configure(state="disabled")
+            elif name == "yydsmail":
+                self._reg_mail_key_entry.configure(state="normal")
+                self._reg_domain_combo.configure(state="readonly")
             else:
                 self._reg_mail_key_entry.configure(state="normal")
                 self._reg_domain_combo.configure(state="readonly")
@@ -1497,25 +1500,37 @@ class App(tk.Tk):
             self._reg_term.insert("end", "PyInstaller 打包的 exe 不包含这些依赖。\n", "info")
             return
 
-        # Check playwright browser is installed
+        # Check playwright browser is installed (or system chromium available)
+        browser_ok = False
         try:
             from playwright._impl._driver import compute_driver_executable
             driver_exec = compute_driver_executable()
-            if not Path(driver_exec).exists():
-                raise FileNotFoundError(driver_exec)
+            if Path(driver_exec).exists():
+                browser_ok = True
         except Exception:
+            pass
+        if not browser_ok:
             try:
                 import playwright._impl._driver as _drv
                 browsers_path = Path(_drv.__file__).parent.parent / "driver" / "package" / ".local-browsers"
-                if not browsers_path.exists():
+                if browsers_path.exists():
+                    browser_ok = True
+                else:
                     user_browsers = Path.home() / "AppData" / "Local" / "ms-playwright"
-                    if not user_browsers.exists():
-                        self._reg_term.delete("1.0", "end")
-                        self._reg_term.insert("end", "Playwright 浏览器未安装，请运行:\n\n", "err")
-                        self._reg_term.insert("end", "  playwright install chromium\n", "highlight")
-                        return
+                    if user_browsers.exists():
+                        browser_ok = True
             except Exception:
                 pass
+        if not browser_ok:
+            # Fallback: check for system chromium (used via executable_path)
+            import shutil
+            if not shutil.which("chromium") and not shutil.which("chromium-browser") and not shutil.which("google-chrome"):
+                self._reg_term.delete("1.0", "end")
+                self._reg_term.insert("end", "Playwright 浏览器未安装，请运行:\n\n", "err")
+                self._reg_term.insert("end", "  playwright install chromium\n", "highlight")
+                self._reg_term.insert("end", "\n或安装系统 Chromium:\n\n", "info")
+                self._reg_term.insert("end", "  sudo pacman -S chromium\n", "highlight")
+                return
 
         self._reg_running = True
         self._reg_cancel = False
@@ -1702,13 +1717,13 @@ class App(tk.Tk):
             from tkinter import messagebox
             messagebox.showwarning("提示", "请先填写 API URL")
             return
-        if provider_name == "shiromail" and not api_key:
+        if provider_name in ("shiromail", "yydsmail") and not api_key:
             from tkinter import messagebox
             messagebox.showwarning("提示", "请先填写 API Key")
             return
         try:
             kwargs = {"base_url": base_url}
-            if provider_name == "shiromail":
+            if provider_name in ("shiromail", "yydsmail"):
                 kwargs["api_key"] = api_key
             provider = get_provider(provider_name, **kwargs)
             domains = provider.list_domains()
@@ -1846,6 +1861,9 @@ class App(tk.Tk):
         if provider_name == "shiromail":
             provider_kwargs["api_key"] = mail_key or ""
             provider_kwargs["domain_id"] = mail_domain_id
+        elif provider_name == "yydsmail":
+            provider_kwargs["api_key"] = mail_key or ""
+            provider_kwargs["domain"] = mail_domain_id
         mail_instance = get_provider(provider_name, **provider_kwargs)
         return await kiro_register.register(
             headless=headless,

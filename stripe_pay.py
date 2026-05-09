@@ -150,6 +150,7 @@ async def fill_stripe_checkout(payment_url, card_info, cdk_code, log=log, headle
             browser = await p.chromium.launch(
                 headless=headless,
                 args=launch_args,
+                executable_path="/usr/bin/chromium",
             )
             context = await browser.new_context(
                 viewport=fp["viewport"],

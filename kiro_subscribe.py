@@ -145,7 +145,7 @@ def fetch_checkout_page(payment_url, log=print):
         log("获取支付页面元素...", "info")
         try:
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+                browser = await p.chromium.launch(headless=True, args=["--no-sandbox"], executable_path="/usr/bin/chromium")
                 page = await browser.new_page(
                     viewport={"width": 1280, "height": 900}, locale="en-US"
                 )

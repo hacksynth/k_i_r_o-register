@@ -416,6 +416,115 @@ async def _dismiss_cookie(page):
     return False
 
 
+async def _find_and_click_submit(page, log=print):
+    """Find and click the primary submit/continue button on the current page.
+    Tries selectors, JS heuristics, and Enter key. Returns True if clicked."""
+    # First, enumerate all visible buttons for debugging
+    try:
+        btn_info = await page.evaluate("""() => {
+            const buttons = Array.from(document.querySelectorAll(
+                'button, [role="button"], input[type="submit"], a[href="#"]'
+            ));
+            return buttons.filter(b => b.offsetWidth > 0 && b.offsetHeight > 0)
+                .map(b => ({
+                    tag: b.tagName,
+                    type: b.type || '',
+                    text: (b.innerText || b.value || '').trim().substring(0, 60),
+                    className: (b.className || '').substring(0, 80),
+                    id: b.id || '',
+                }));
+        }""")
+        if btn_info:
+            texts = [b['text'] for b in btn_info if b['text']]
+            log(f"  页面可见按钮: {texts}", "dbg")
+    except Exception:
+        btn_info = []
+
+    # Strategy 1: submit button inside form
+    for sel in [
+        'xpath=//form//button[@type="submit"]',
+        'xpath=//form//input[@type="submit"]',
+    ]:
+        try:
+            btn = page.locator(sel).first
+            if await btn.count() > 0 and await btn.is_visible():
+                await btn.scroll_into_view_if_needed()
+                await asyncio.sleep(0.2)
+                await btn.click(timeout=5000)
+                log(f"  点击了: {sel}", "dbg")
+                return True
+        except Exception:
+            pass
+
+    # Strategy 2: button by text content
+    for text in ["Continue", "Next", "Verify", "Create", "Set up", "Submit", "Confirm",
+                 "Create account", "Create Account", "Sign up", "Sign Up", "Allow",
+                 "Authorize", "Accept", "Agree", "Register"]:
+        for sel in [
+            f'xpath=//button[contains(text(),"{text}")]',
+            f'xpath=//button[contains(.,"{text}")]',
+            f'xpath=//*[@role="button"][contains(text(),"{text}")]',
+            f'xpath=//span[contains(text(),"{text}")]/ancestor::button',
+        ]:
+            try:
+                btn = page.locator(sel).first
+                if await btn.count() > 0 and await btn.is_visible():
+                    await btn.scroll_into_view_if_needed()
+                    await asyncio.sleep(0.2)
+                    await btn.click(timeout=5000)
+                    log(f"  点击了按钮: '{text}'", "dbg")
+                    return True
+            except Exception:
+                pass
+
+    # Strategy 3: any submit button
+    try:
+        btn = page.locator('xpath=//button[@type="submit"]').first
+        if await btn.count() > 0 and await btn.is_visible():
+            await btn.click(timeout=5000)
+            return True
+    except Exception:
+        pass
+
+    # Strategy 4: JS click on likely-primary button
+    try:
+        clicked = await page.evaluate("""() => {
+            const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+            const visible = buttons.filter(b => b.offsetWidth > 0 && b.offsetHeight > 0);
+            // Prefer the rightmost or last button (typically "Continue"/"Next")
+            if (visible.length === 0) return false;
+            // Try to find one with primary/submit styling
+            for (const b of visible) {
+                const cls = (b.className || '').toLowerCase();
+                const text = (b.innerText || '').toLowerCase();
+                if (cls.includes('primary') || cls.includes('submit') ||
+                    cls.includes('btn-primary') || cls.includes('awsui-button-primary') ||
+                    text.includes('continue') || text.includes('next') || text.includes('verify')) {
+                    b.click();
+                    return true;
+                }
+            }
+            // Fallback: last visible button
+            visible[visible.length - 1].click();
+            return true;
+        }""")
+        if clicked:
+            log("  JS fallback 点击按钮", "dbg")
+            return True
+    except Exception:
+        pass
+
+    # Strategy 5: Enter key
+    try:
+        await page.keyboard.press("Enter")
+        log("  尝试 Enter 键提交", "dbg")
+        return True
+    except Exception:
+        pass
+
+    return False
+
+
 async def _click_submit(page, label_contains=None, timeout=10000):
     if label_contains:
         btn = page.locator(f'xpath=//form//button[@type="submit"][contains(text(),"{label_contains}")]')
@@ -523,6 +632,9 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
     log(f"阶段 2: 启动浏览器 (headless={headless})")
     authorization_code = ""
 
+    class ReuseHTTPServer(HTTPServer):
+        allow_reuse_address = True
+
     class CallbackHandler(BaseHTTPRequestHandler):
         signin_callback_params = {}
 
@@ -574,7 +686,7 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
         except Exception:
             pass
 
-    callback_server = HTTPServer(("127.0.0.1", 3128), CallbackHandler)
+    callback_server = ReuseHTTPServer(("127.0.0.1", 3128), CallbackHandler)
     callback_server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv_thread = threading.Thread(target=callback_server.serve_forever, daemon=True)
     srv_thread.start()
@@ -594,7 +706,7 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
             if headless:
                 launch_args += ["--disable-gpu", "--no-sandbox",
                                 "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-            browser = await p.chromium.launch(headless=headless, args=launch_args)
+            browser = await p.chromium.launch(headless=headless, args=launch_args, executable_path="/usr/bin/chromium")
             context = await browser.new_context(
                 viewport=fp_config["viewport"],
                 screen=fp_config["screen"],
@@ -688,7 +800,7 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
                 await _human_type(page, email_input, email)
                 await _human_delay(0.8, 1.5)
                 log(f"邮箱已填入: {email}")
-                await _click_submit(page)
+                await _find_and_click_submit(page, log)
                 await page.wait_for_load_state("networkidle")
                 await _human_delay(2, 4)
 
@@ -794,23 +906,11 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
                             break
                     except Exception:
                         await asyncio.sleep(1)
+                # Press Tab to blur the name field (triggers onBlur validation)
+                await page.keyboard.press("Tab")
+                await _human_delay(0.3, 0.6)
                 for attempt in range(3):
-                    clicked = False
-                    try:
-                        for sel in [
-                            'xpath=//form//button[@type="submit"]',
-                            'xpath=//button[contains(text(),"Continue")]',
-                            'xpath=//button[@type="submit"]',
-                        ]:
-                            btn = page.locator(sel)
-                            if await btn.count() > 0 and await btn.first.is_visible():
-                                await btn.first.click()
-                                clicked = True
-                                break
-                        if not clicked:
-                            await page.keyboard.press("Enter")
-                    except Exception:
-                        pass
+                    await _find_and_click_submit(page, log)
                     await asyncio.sleep(4)
                     new_state = await detect_state()
                     if new_state != "NAME":
@@ -870,15 +970,7 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
                 await _human_delay(0.8, 1.5)
 
                 for attempt in range(3):
-                    try:
-                        submit_btn = page.locator('xpath=//form//button[@type="submit"]')
-                        if await submit_btn.count() > 0 and await submit_btn.first.is_visible():
-                            await _move_to_element(page, submit_btn.first)
-                            await submit_btn.first.click()
-                        else:
-                            await page.keyboard.press("Enter")
-                    except Exception:
-                        pass
+                    await _find_and_click_submit(page, log)
                     log("验证码已提交")
                     await asyncio.sleep(3)
                     new_state = await detect_state()
@@ -912,12 +1004,7 @@ async def register(headless=True, auto_login=True, skip_onboard=True,
                             await _move_to_element(page, pwd_inputs.nth(1))
                             await _human_type(page, pwd_inputs.nth(1), password, min_delay=30, max_delay=90)
                             await _human_delay(0.5, 1.0)
-                        submit_btn = page.locator('xpath=//form//button[@type="submit"]')
-                        if await submit_btn.count() > 0 and await submit_btn.first.is_visible():
-                            await _move_to_element(page, submit_btn.first)
-                            await submit_btn.first.click()
-                        else:
-                            await page.keyboard.press("Enter")
+                        await _find_and_click_submit(page, log)
                     except Exception:
                         await asyncio.sleep(2)
                         continue

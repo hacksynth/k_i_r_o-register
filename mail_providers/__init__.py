@@ -15,10 +15,12 @@
 from .base import MailProvider
 from .shiromail import ShiroMailProvider
 from .tempforward import TempForwardProvider
+from .yydsmail import YYDSMailProvider
 
 PROVIDERS: dict[str, type[MailProvider]] = {
     "shiromail": ShiroMailProvider,
     "tempforward": TempForwardProvider,
+    "yydsmail": YYDSMailProvider,
 }
 
 
